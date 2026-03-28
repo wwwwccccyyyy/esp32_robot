@@ -1,4 +1,4 @@
-/*
+﻿/*
  * cy_robot ESP32 - Main
  * QQ Bot + DeepSeek LLM + GPIO Control
  *
@@ -14,6 +14,7 @@
 #include "llm/deepseek_client.h"
 #include "hw/gpio_manager.h"
 #include "hw/rgb_led.h"
+#include "engine/action_engine.h"
 #include "bot/command_handler.h"
 #include "bot/qq_bot.h"
 
@@ -23,7 +24,8 @@ WebPortal webPortal;
 DeepSeekClient deepseek;
 GpioManager gpioManager;
 RgbLed rgbLed;
-CommandHandler cmdHandler(deepseek, gpioManager, rgbLed);
+ActionEngine actionEngine(rgbLed, gpioManager);
+CommandHandler cmdHandler(deepseek, actionEngine);
 QQBot qqBot(cmdHandler);
 
 unsigned long lastStatusReport = 0;
@@ -50,13 +52,10 @@ void setup() {
     Serial.println("Initializing DeepSeek Client...");
     deepseek.begin();
     deepseek.setSystemPrompt(
-        "You are cy_robot, an AI assistant running on an ESP32-S3 IoT device. "
-        "You can control hardware by including action tags in your response:\n"
-        "- RGB LED: [RGB:r,g,b] where r,g,b are 0-255. Example: [RGB:255,0,0] for red, [RGB:0,0,0] for off.\n"
-        "- GPIO pins (4,5,6,7,8,15,16,17,18): [GPIO:pin,value] value is 0 or 1. Example: [GPIO:4,1]\n"
-        "When the user asks to control lights or pins, include the appropriate tag AND a brief friendly reply. "
-        "For normal conversation, just reply naturally without tags. "
-        "Be concise. Reply in the same language as the user."
+        "You are cy_robot, a warm and helpful assistant on an ESP32 device. "
+        "Be concise, natural, and friendly. "
+        "When the developer prompt explicitly asks for strict JSON planning, "
+        "you must output valid JSON only."
     );
 
     // Connect WiFi
@@ -94,15 +93,21 @@ void setup() {
 }
 
 void loop() {
+    // Run action queue and timed effects.
+    actionEngine.loop();
+
     // Handle WiFi
     if (!wifiManager.isConnected()) {
         wifiManager.reconnect();
-        delay(1000);
+        delay(100);
         return;
     }
 
     // QQ Bot WebSocket loop (heartbeat + messages)
     qqBot.loop();
+
+    // Tick action engine again in case network work took time.
+    actionEngine.loop();
 
     // Status report every minute
     unsigned long now = millis();

@@ -1,147 +1,229 @@
-#include "command_handler.h"
-#include "llm/deepseek_client.h"
-#include "hw/gpio_manager.h"
-#include "hw/rgb_led.h"
-#include "config.h"
+﻿#include "command_handler.h"
+
+#include <ArduinoJson.h>
 #include <WiFi.h>
 
-// ============================================================
-// Command table — add new commands here
-// ============================================================
-const CmdEntry CommandHandler::commands[] = {
-    { "/start",  "Show help",    &CommandHandler::cmdStart  },
-    { "/status", "Device info",  &CommandHandler::cmdStatus },
-    // { "/reboot", "Restart device", &CommandHandler::cmdReboot },
-};
-const int CommandHandler::commandCount = sizeof(commands) / sizeof(commands[0]);
+#include "config.h"
+#include "engine/action_engine.h"
+#include "llm/deepseek_client.h"
 
-// ============================================================
-// Action tag table — add new AI action tags here
-// ============================================================
-const ActionTagEntry CommandHandler::actionTags[] = {
-    { "RGB:",  &CommandHandler::execRgb  },
-    { "GPIO:", &CommandHandler::execGpio },
-    // { "PWM:",  &CommandHandler::execPwm },
-    // { "SERVO:", &CommandHandler::execServo },
-};
-const int CommandHandler::actionTagCount = sizeof(actionTags) / sizeof(actionTags[0]);
+namespace {
 
-// ============================================================
-// Core dispatch
-// ============================================================
+String cleanReply(String text) {
+    text.trim();
 
-CommandHandler::CommandHandler(DeepSeekClient& llm, GpioManager& gpio, RgbLed& rgb)
-    : llm(llm), gpio(gpio), rgb(rgb) {}
-
-String CommandHandler::handle(const String& text) {
-    // Slash commands
-    if (text.startsWith("/")) {
-        for (int i = 0; i < commandCount; i++) {
-            if (text == commands[i].name) {
-                return (this->*commands[i].handler)();
-            }
+    if (text.startsWith("```")) {
+        int firstNewline = text.indexOf('\n');
+        int lastFence = text.lastIndexOf("```");
+        if (firstNewline >= 0 && lastFence > firstNewline) {
+            text = text.substring(firstNewline + 1, lastFence);
+            text.trim();
         }
-        return "Unknown command. Type /start for help.";
     }
 
-    // Rate limiting
+    if (text.length() > 280) {
+        text = text.substring(0, 280) + "...";
+    }
+
+    return text;
+}
+
+} // namespace
+
+CommandHandler::CommandHandler(DeepSeekClient& llm, ActionEngine& actionEngine)
+    : llm(llm), actionEngine(actionEngine) {}
+
+String CommandHandler::handle(const String& text) {
+    String input = text;
+    input.trim();
+
+    if (input.length() == 0) {
+        return "我在呢，你可以直接说想做什么。";
+    }
+
+    if (input.startsWith("/")) {
+        return handleSlashCommand(input);
+    }
+
+    // Path 1: direct JSON command from user.
+    if (looksLikeJson(input)) {
+        String response;
+        int added = 0;
+        if (enqueueJsonPlan(input, false, response, added)) {
+            if (added <= 0) {
+                return "JSON accepted, no actions scheduled.";
+            }
+            return "Queued " + String(added) + " action(s). " + actionEngine.status();
+        }
+        return "JSON rejected: " + response;
+    }
+
+    // Path 2: natural language -> LLM planner JSON.
     unsigned long now = millis();
     if (now - lastAiCall < AI_COOLDOWN_MS) {
         unsigned long remaining = (AI_COOLDOWN_MS - (now - lastAiCall)) / 1000 + 1;
-        return "Please wait " + String(remaining) + "s before next message.";
+        return "我还在整理上一条，等我 " + String(remaining) + "s 再来一条。";
     }
     lastAiCall = now;
 
-    // Build context and call AI
-    String context = "[Device state: LED=" + rgb.getStatus() +
-                     " Heap=" + String(ESP.getFreeHeap() / 1024) + "KB" +
-                     " Uptime=" + String(millis() / 1000) + "s]\n" + text;
+    String plannerPrompt;
+    plannerPrompt += "You are planning actions for an ESP32 device.\\n";
+    plannerPrompt += "Return ONLY a single JSON object, no markdown.\\n";
+    plannerPrompt += "Schema: {\"reply\":\"warm short message in user's language\",\"sequence\":[...]}\\n";
+    plannerPrompt += "Allowed actions: set_rgb, blink_rgb, set_gpio, wait.\\n";
+    plannerPrompt += "Allowed GPIO pins: 48,4,5,6,7,15,16,17,18,8,3.\\n";
+    plannerPrompt += "Action templates:\\n";
+    plannerPrompt += "{\"action\":\"set_rgb\",\"color\":[r,g,b]}\\n";
+    plannerPrompt += "{\"action\":\"blink_rgb\",\"color\":[r,g,b],\"times\":3,\"duration_ms\":1000}\\n";
+    plannerPrompt += "{\"action\":\"set_gpio\",\"pin\":4,\"value\":1}\\n";
+    plannerPrompt += "{\"action\":\"wait\",\"duration_ms\":500}\\n";
+    plannerPrompt += "If user is chatting and no hardware action is needed, set sequence to [].\\n";
+    plannerPrompt += "User request:\\n";
+    plannerPrompt += input;
 
-    String aiResponse = llm.chat(context);
-    return executeActions(aiResponse);
-}
+    String aiRaw = llm.chat(plannerPrompt);
+    aiRaw = cleanReply(aiRaw);
 
-// ============================================================
-// Command handlers
-// ============================================================
-
-String CommandHandler::cmdStart() {
-    return buildHelpMessage();
-}
-
-String CommandHandler::cmdStatus() {
-    String msg = DEVICE_NAME " Status\n\n";
-    msg += "Uptime: " + String(millis() / 1000) + "s\n";
-    msg += "Free Heap: " + String(ESP.getFreeHeap() / 1024) + " KB\n";
-    msg += "WiFi RSSI: " + String(WiFi.RSSI()) + " dBm\n";
-    msg += "IP: " + WiFi.localIP().toString() + "\n";
-    msg += "Version: " + String(DEVICE_VERSION);
-    return msg;
-}
-
-String CommandHandler::buildHelpMessage() {
-    String msg = DEVICE_NAME " is ready!\n\n";
-    msg += "Just tell me what you want in natural language!\n\n";
-    msg += "Commands:\n";
-    for (int i = 0; i < commandCount; i++) {
-        msg += String(commands[i].name) + " - " + commands[i].desc + "\n";
+    String jsonPayload = extractJsonPayload(aiRaw);
+    if (jsonPayload.length() == 0) {
+        // Fallback: keep conversation fun even when planner format fails.
+        if (aiRaw.length() > 0) {
+            return aiRaw;
+        }
+        return "我理解得还不够准确，你可以再具体一点，比如：1秒红灯闪3次。";
     }
-    return msg;
-}
 
-// ============================================================
-// Action tag processing — generic loop
-// ============================================================
+    JsonDocument doc;
+    DeserializationError parseError = deserializeJson(doc, jsonPayload);
+    if (parseError) {
+        if (aiRaw.length() > 0) {
+            return aiRaw;
+        }
+        return "Planner JSON parse failed: " + String(parseError.c_str());
+    }
 
-String CommandHandler::executeActions(const String& aiResponse) {
-    String reply = aiResponse;
-
-    for (int t = 0; t < actionTagCount; t++) {
-        String prefix = "[" + String(actionTags[t].prefix);
-        int prefixLen = prefix.length();
-
-        int pos = reply.indexOf(prefix);
-        while (pos >= 0) {
-            int end = reply.indexOf(']', pos);
-            if (end < 0) break;
-
-            String params = reply.substring(pos + prefixLen, end);
-            (this->*actionTags[t].executor)(params);
-
-            // Remove tag from reply
-            reply = reply.substring(0, pos) + reply.substring(end + 1);
-            pos = reply.indexOf(prefix);
+    String reply = "收到，我来处理。";
+    if (doc["reply"].is<const char*>()) {
+        String parsedReply = cleanReply(doc["reply"].as<String>());
+        if (parsedReply.length() > 0) {
+            reply = parsedReply;
         }
     }
 
-    reply.trim();
-    return reply;
+    bool hasExecutable = false;
+    if (doc.is<JsonObjectConst>()) {
+        JsonObjectConst obj = doc.as<JsonObjectConst>();
+        if (obj["action"].is<const char*>()) {
+            hasExecutable = true;
+        } else if (obj["sequence"].is<JsonArrayConst>()) {
+            hasExecutable = obj["sequence"].as<JsonArrayConst>().size() > 0;
+        }
+    } else if (doc.is<JsonArrayConst>()) {
+        hasExecutable = doc.as<JsonArrayConst>().size() > 0;
+    }
+
+    if (!hasExecutable) {
+        return reply;
+    }
+
+    String enqueueResult;
+    int added = 0;
+    if (!enqueueJsonPlan(jsonPayload, false, enqueueResult, added)) {
+        return "Plan rejected: " + enqueueResult;
+    }
+
+    if (added <= 0) {
+        return reply;
+    }
+
+    return reply + " | queued " + String(added) + " action(s). " + actionEngine.status();
 }
 
-// ============================================================
-// Tag executors
-// ============================================================
-
-void CommandHandler::execRgb(const String& params) {
-    // params: "r,g,b"
-    int c1 = params.indexOf(',');
-    int c2 = params.indexOf(',', c1 + 1);
-    if (c1 > 0 && c2 > 0) {
-        int r = constrain(params.substring(0, c1).toInt(), 0, 255);
-        int g = constrain(params.substring(c1 + 1, c2).toInt(), 0, 255);
-        int b = constrain(params.substring(c2 + 1).toInt(), 0, 255);
-        rgb.setColor(r, g, b);
-        Serial.println("Action: RGB(" + String(r) + "," + String(g) + "," + String(b) + ")");
+String CommandHandler::handleSlashCommand(const String& text) {
+    if (text == "/start" || text == "/help") {
+        return buildHelpMessage();
     }
+
+    if (text == "/status") {
+        return buildStatusMessage();
+    }
+
+    if (text == "/queue") {
+        return "Queue status: " + actionEngine.status();
+    }
+
+    if (text == "/clear") {
+        actionEngine.clearQueue();
+        return "Queue cleared. LED off.";
+    }
+
+    return "Unknown command. Use /help.";
 }
 
-void CommandHandler::execGpio(const String& params) {
-    // params: "pin,value"
-    int comma = params.indexOf(',');
-    if (comma > 0) {
-        int pin = params.substring(0, comma).toInt();
-        int val = params.substring(comma + 1).toInt();
-        gpio.setPin(pin, val);
-        Serial.println("Action: GPIO " + String(pin) + "=" + String(val));
+String CommandHandler::buildHelpMessage() {
+    String msg = DEVICE_NAME " is ready!\\n\\n";
+    msg += "Commands:\\n";
+    msg += "/help - show help\\n";
+    msg += "/status - device status\\n";
+    msg += "/queue - queue status\\n";
+    msg += "/clear - clear queue and stop effects\\n\\n";
+    msg += "You can chat naturally, or send direct JSON.\\n";
+    msg += "Example JSON:\\n";
+    msg += "{\"sequence\":[{\"action\":\"blink_rgb\",\"color\":[255,0,0],\"times\":3,\"duration_ms\":1000}]}";
+    return msg;
+}
+
+String CommandHandler::buildStatusMessage() {
+    String msg = DEVICE_NAME " Status\\n\\n";
+    msg += "Uptime: " + String(millis() / 1000) + "s\\n";
+    msg += "Free Heap: " + String(ESP.getFreeHeap() / 1024) + " KB\\n";
+    msg += "WiFi RSSI: " + String(WiFi.RSSI()) + " dBm\\n";
+    msg += "IP: " + WiFi.localIP().toString() + "\\n";
+    msg += "Version: " + String(DEVICE_VERSION) + "\\n";
+    msg += "Actions: " + actionEngine.status();
+    return msg;
+}
+
+bool CommandHandler::looksLikeJson(const String& text) const {
+    return text.startsWith("{") || text.startsWith("[");
+}
+
+String CommandHandler::extractJsonPayload(const String& raw) const {
+    String s = raw;
+    s.trim();
+
+    if (looksLikeJson(s)) {
+        return s;
     }
+
+    int objStart = s.indexOf('{');
+    int objEnd = s.lastIndexOf('}');
+    int arrStart = s.indexOf('[');
+    int arrEnd = s.lastIndexOf(']');
+
+    bool hasObj = (objStart >= 0 && objEnd > objStart);
+    bool hasArr = (arrStart >= 0 && arrEnd > arrStart);
+
+    if (!hasObj && !hasArr) {
+        return "";
+    }
+
+    if (hasObj && (!hasArr || objStart <= arrStart)) {
+        return s.substring(objStart, objEnd + 1);
+    }
+
+    return s.substring(arrStart, arrEnd + 1);
+}
+
+bool CommandHandler::enqueueJsonPlan(const String& raw, bool allowExtract, String& response, int& addedCount) {
+    String payload = raw;
+    if (allowExtract) {
+        payload = extractJsonPayload(raw);
+        if (payload.length() == 0) {
+            response = "No JSON payload found.";
+            return false;
+        }
+    }
+
+    return actionEngine.enqueueFromJson(payload, response, addedCount);
 }

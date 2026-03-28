@@ -1,4 +1,4 @@
-#include "rgb_led.h"
+﻿#include "rgb_led.h"
 #include "pins.h"
 
 // ESP32-S3 has built-in RMT-based WS2812 driver
@@ -9,9 +9,81 @@ void RgbLed::begin() {
     Serial.println("RGB LED initialized on GPIO " + String(RGB_LED_PIN));
 }
 
-void RgbLed::setColor(uint8_t r, uint8_t g, uint8_t b) {
-    curR = r; curG = g; curB = b;
+void RgbLed::applyColor(uint8_t r, uint8_t g, uint8_t b) {
+    curR = r;
+    curG = g;
+    curB = b;
     neopixelWrite(RGB_LED_PIN, r, g, b);
+}
+
+void RgbLed::setColor(uint8_t r, uint8_t g, uint8_t b) {
+    blinking = false;
+    applyColor(r, g, b);
+}
+
+bool RgbLed::startBlink(uint8_t r, uint8_t g, uint8_t b, uint8_t times, uint16_t durationMs, bool restoreAfter) {
+    if (times == 0 || durationMs == 0) {
+        return false;
+    }
+
+    savedR = curR;
+    savedG = curG;
+    savedB = curB;
+
+    blinkR = r;
+    blinkG = g;
+    blinkB = b;
+    blinkRestoreAfter = restoreAfter;
+    blinkStateOn = false;
+
+    const unsigned long transitions = (unsigned long)times * 2UL;
+    blinkTransitionsLeft = (int)transitions;
+    blinkPhaseMs = durationMs / transitions;
+    if (blinkPhaseMs == 0) {
+        blinkPhaseMs = 1;
+    }
+
+    const unsigned long now = millis();
+    nextBlinkToggleAt = now;
+    blinking = true;
+
+    // Start from OFF so first transition turns ON.
+    applyColor(0, 0, 0);
+    return true;
+}
+
+void RgbLed::loop() {
+    if (!blinking) {
+        return;
+    }
+
+    const unsigned long now = millis();
+    if ((long)(now - nextBlinkToggleAt) < 0) {
+        return;
+    }
+
+    blinkStateOn = !blinkStateOn;
+    if (blinkStateOn) {
+        applyColor(blinkR, blinkG, blinkB);
+    } else {
+        applyColor(0, 0, 0);
+    }
+
+    blinkTransitionsLeft--;
+    nextBlinkToggleAt += blinkPhaseMs;
+
+    if (blinkTransitionsLeft <= 0) {
+        blinking = false;
+        if (blinkRestoreAfter) {
+            applyColor(savedR, savedG, savedB);
+        } else {
+            applyColor(0, 0, 0);
+        }
+    }
+}
+
+bool RgbLed::isBlinking() const {
+    return blinking;
 }
 
 void RgbLed::off() {
@@ -23,14 +95,14 @@ String RgbLed::parseCommand(const String& args) {
     a.trim();
 
     // Predefined color names
-    if (a == "red")     { setColor(255, 0, 0);   return "RGB: red"; }
-    if (a == "green")   { setColor(0, 255, 0);   return "RGB: green"; }
-    if (a == "blue")    { setColor(0, 0, 255);    return "RGB: blue"; }
+    if (a == "red")     { setColor(255, 0, 0);     return "RGB: red"; }
+    if (a == "green")   { setColor(0, 255, 0);     return "RGB: green"; }
+    if (a == "blue")    { setColor(0, 0, 255);     return "RGB: blue"; }
     if (a == "white")   { setColor(255, 255, 255); return "RGB: white"; }
-    if (a == "yellow")  { setColor(255, 255, 0);  return "RGB: yellow"; }
-    if (a == "cyan")    { setColor(0, 255, 255);  return "RGB: cyan"; }
-    if (a == "purple")  { setColor(128, 0, 255);  return "RGB: purple"; }
-    if (a == "orange")  { setColor(255, 100, 0);  return "RGB: orange"; }
+    if (a == "yellow")  { setColor(255, 255, 0);   return "RGB: yellow"; }
+    if (a == "cyan")    { setColor(0, 255, 255);   return "RGB: cyan"; }
+    if (a == "purple")  { setColor(128, 0, 255);   return "RGB: purple"; }
+    if (a == "orange")  { setColor(255, 100, 0);   return "RGB: orange"; }
     if (a == "off")     { off();                   return "RGB: off"; }
 
     // Parse "r g b" format
@@ -53,5 +125,9 @@ String RgbLed::parseCommand(const String& args) {
 }
 
 String RgbLed::getStatus() {
-    return "RGB(" + String(curR) + "," + String(curG) + "," + String(curB) + ")";
+    String status = "RGB(" + String(curR) + "," + String(curG) + "," + String(curB) + ")";
+    if (blinking) {
+        status += "[BLINKING]";
+    }
+    return status;
 }
