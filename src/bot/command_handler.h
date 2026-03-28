@@ -23,6 +23,9 @@ private:
     String buildStatusMessage();
 
     bool looksLikeJson(const String& text) const;
+    bool likelyHardwareIntent(const String& text) const;
+    String tryLocalChitchat(const String& text, bool& handled) const;
+
     String extractJsonPayload(const String& raw) const;
     bool enqueueJsonPlan(const String& raw, bool allowExtract, String& response, int& addedCount);
 };
