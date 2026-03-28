@@ -1,114 +1,93 @@
-# MiniClaw ESP32 🤖
+﻿# cy_robot (ESP32-S3 QQ Bot + DeepSeek)
 
-ESP32-S3 based AI Assistant with Telegram integration and Kimi LLM support.
+This project is a derivative work based on an open-source ESP32 bot project, then customized and extended for my own use cases.
 
-## ✨ Features
+Main changes in this repo:
+- Migrated bot channel to QQ Bot events.
+- Switched LLM integration to DeepSeek API.
+- Added GPIO and RGB action-tag execution.
+- Kept PlatformIO + ESP32-S3 deployment workflow.
 
-- **🤖 Telegram Bot** - Chat with your ESP32 via Telegram
-- **🧠 Kimi LLM** - Powered by z.ai (GLM-4.5)
-- **📶 WiFi Manager** - Auto-connect with AP fallback
-- **🔌 GPIO Control** - Control pins via chat commands
-- **💾 PSRAM Support** - Utilize 8MB PSRAM on ESP32-S3
+If needed, please add the original upstream repository URL here:
+- Original project: `<ORIGINAL_REPO_URL>`
 
-## 🛠️ Hardware
+## Features
 
-- **Board:** ESP32-S3 N16R8 (16MB Flash + 8MB PSRAM)
-- **Connectivity:** WiFi 2.4GHz
-- **USB:** USB-C (Serial + OTG)
+- QQ bot message handling (group + C2C).
+- DeepSeek chat completion integration.
+- Action tags from AI response:
+  - `[RGB:r,g,b]`
+  - `[GPIO:pin,value]`
+- Wi-Fi connect with AP fallback setup portal.
+- ESP32-S3 build via PlatformIO.
 
-## 🚀 Quick Start
+## Hardware
 
-### 1. Prerequisites
+- Board: ESP32-S3 (configured for N16R8 in `platformio.ini`).
+- Wi-Fi: 2.4 GHz.
+- USB: Serial upload/monitor.
 
-Install **PlatformIO** (VS Code Extension or CLI):
-```bash
-pip install platformio
-```
+## Quick Start
 
-Install USB Driver:
-- [CP210x Driver](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers) or
-- [CH340 Driver](https://sparks.gogo.co.nz/ch340.html)
+1. Install PlatformIO (VS Code extension or CLI).
+2. Copy `include/secrets.h.example` to `include/secrets.h`.
+3. Fill in credentials in `include/secrets.h`:
 
-### 2. Clone & Configure
-
-```bash
-git clone https://github.com/YOUR_USERNAME/miniclaw-esp32.git
-cd miniclaw-esp32
-```
-
-Copy config template:
-```bash
-cp include/secrets.h.example include/secrets.h
-```
-
-Edit `include/secrets.h`:
 ```cpp
-#define WIFI_SSID "YOUR_WIFI_NAME"
-#define WIFI_PASSWORD "YOUR_WIFI_PASS"
-#define TELEGRAM_BOT_TOKEN "YOUR_BOT_TOKEN"  // From @BotFather
-#define KIMI_API_KEY "YOUR_ZAI_API_KEY"       // From z.ai
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#define QQ_APP_ID "YOUR_QQ_APP_ID"
+#define QQ_APP_SECRET "YOUR_QQ_APP_SECRET"
+#define DEEPSEEK_API_KEY "YOUR_DEEPSEEK_API_KEY"
 ```
 
-### 3. Build & Flash
+4. Build and upload:
 
 ```bash
 pio run --target upload
 pio device monitor
 ```
 
-## 🤖 Telegram Commands
+## Commands
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Start conversation |
-| `/status` | Show device status (uptime, heap, WiFi) |
-| `/gpio [pin] [0/1]` | Control GPIO pin (e.g., `/gpio 2 1`) |
-| Any text | Ask Kimi AI |
+- `/start` - Show help.
+- `/status` - Show device status.
+- Normal text - Forward to DeepSeek and return response.
 
-## 🧠 How It Works
+## Project Layout
 
-```
-User (Telegram) → ESP32 → Kimi API (z.ai) → Response → Telegram
-```
-
-1. User sends message to Telegram Bot
-2. ESP32 receives message via Telegram API
-3. If command: execute directly (GPIO, status)
-4. If text: forward to Kimi LLM API
-5. Send response back to Telegram
-
-## 📁 Project Structure
-
-```
-miniclaw-esp32/
-├── include/
-│   ├── config.h          # General configuration
-│   ├── secrets.h         # WiFi & API keys (not in git)
-│   └── secrets.h.example # Template
-├── src/
-│   ├── main.cpp          # Entry point
-│   ├── telegram_bot.cpp  # Telegram handling
-│   ├── telegram_bot.h
-│   ├── kimi_client.cpp   # Kimi LLM API
-│   ├── kimi_client.h
-│   ├── wifi_manager.cpp  # WiFi connection
-│   └── wifi_manager.h
-├── platformio.ini        # PlatformIO config
-└── README.md
+```text
+esp32_robot/
+  include/
+    config.h
+    pins.h
+    secrets.h.example
+  src/
+    main.cpp
+    bot/
+      command_handler.*
+      qq_bot.*
+    llm/
+      deepseek_client.*
+    net/
+      wifi_manager.*
+      web_portal.*
+    hw/
+      gpio_manager.*
+      rgb_led.*
+  platformio.ini
+  README.md
 ```
 
-## ⚠️ Important
+## Security Notes
 
-- **Never commit `secrets.h`** - It contains your API keys!
-- ESP32 has limited RAM (~512KB), long responses may be truncated
-- For best results, keep questions concise
+- Never commit `include/secrets.h`.
+- Rotate keys immediately if they are ever exposed.
+- `QQ_API_BASE` is currently sandbox by default; switch to production base URL when publishing.
 
-## 📝 License
+## Acknowledgements
 
-MIT License - Feel free to use and modify!
-
-## 🙏 Credits
-
-- [UniversalTelegramBot](https://github.com/witnessmenow/Universal-Arduino-Telegram-Bot) by witnessmenow
-- [ArduinoJson](https://arduinojson.org/) by bblanchon
-- Kimi LLM by [z.ai](https://z.ai)
+- Original upstream open-source project (to be linked).
+- [ArduinoJson](https://arduinojson.org/)
+- [ESPAsyncWebServer](https://github.com/me-no-dev/ESPAsyncWebServer)
+- [WebSockets](https://github.com/Links2004/arduinoWebSockets)
