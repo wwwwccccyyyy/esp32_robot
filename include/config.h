@@ -18,7 +18,7 @@
 // DeepSeek LLM (API key in secrets.h)
 #define DEEPSEEK_API_ENDPOINT "https://api.deepseek.com/chat/completions"
 #define DEEPSEEK_MODEL "deepseek-chat"
-#define DEEPSEEK_MAX_TOKENS 500
+#define DEEPSEEK_MAX_TOKENS 800
 #define DEEPSEEK_TIMEOUT_MS 15000
 
 // GPIO (pin definitions in pins.h)
@@ -27,5 +27,14 @@
 // System
 #define STATUS_REPORT_INTERVAL_MS 60000  // Report every 1 minute
 #define WATCHDOG_TIMEOUT_MS 30000
+
+// FreeRTOS task configuration
+#define NETWORK_TASK_STACK   8192   // bytes
+#define NETWORK_TASK_PRIO    2
+#define NETWORK_TASK_CORE    0
+
+#define HARDWARE_TASK_STACK  4096   // bytes
+#define HARDWARE_TASK_PRIO   3
+#define HARDWARE_TASK_CORE   1
 
 #endif // CONFIG_H

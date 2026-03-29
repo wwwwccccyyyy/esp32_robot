@@ -1,6 +1,7 @@
-﻿/*
+/*
  * cy_robot ESP32 - Main
  * QQ Bot + DeepSeek LLM + GPIO Control
+ * FreeRTOS dual-core: Core 0 = network/LLM, Core 1 = hardware
  *
  * Hardware: ESP32-S3 N16R8 (16MB Flash + 8MB PSRAM)
  */
@@ -9,24 +10,83 @@
 #include "secrets.h"
 #include "config.h"
 #include "pins.h"
+
 #include "net/wifi_manager.h"
 #include "net/web_portal.h"
 #include "llm/deepseek_client.h"
 #include "hw/gpio_manager.h"
 #include "hw/rgb_led.h"
-#include "engine/action_engine.h"
-#include "bot/command_handler.h"
+
+#include "engine/action_queue.h"
+#include "device/device.h"
+#include "device/device_registry.h"
+#include "device/rgb_led_device.h"
+#include "device/gpio_device.h"
+
+#include "bot/planner.h"
+#include "bot/command_router.h"
 #include "bot/qq_bot.h"
 
-// Module instances
+// --- Module instances ---
 WiFiManager wifiManager;
 WebPortal webPortal;
 DeepSeekClient deepseek;
 GpioManager gpioManager;
 RgbLed rgbLed;
-ActionEngine actionEngine(rgbLed, gpioManager);
-CommandHandler cmdHandler(deepseek, actionEngine);
-QQBot qqBot(cmdHandler);
+
+// Device layer
+RgbLedDevice rgbLedDevice(rgbLed);
+GpioDevice gpioDevice(gpioManager);
+DeviceRegistry registry;
+ActionQueue actionQueue;
+
+// Bot layer
+Planner planner(deepseek, registry, actionQueue);
+CommandRouter cmdRouter(planner, actionQueue, registry);
+QQBot qqBot(cmdRouter);
+
+// --- FreeRTOS tasks ---
+
+// Core 0: QQBot WebSocket loop (includes LLM calls via Planner)
+void networkTask(void* param) {
+    for (;;) {
+        if (!wifiManager.isConnected()) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        qqBot.loop();
+        vTaskDelay(pdMS_TO_TICKS(1));  // yield
+    }
+}
+
+// Core 1: consume ActionQueue, tick all device loops
+void hardwareTask(void* param) {
+    for (;;) {
+        // Tick all device state machines (blink animations etc.)
+        for (int i = 0; i < registry.deviceCount(); i++) {
+            registry.deviceAt(i)->loop();
+        }
+
+        ActionItem item;
+        if (actionQueue.receive(item, pdMS_TO_TICKS(10))) {
+            if (strcmp(item.actionName, "wait") == 0) {
+                vTaskDelay(pdMS_TO_TICKS(item.durationMs));
+            } else {
+                Device* dev = registry.findByAction(item.actionName);
+                if (dev) {
+                    String err;
+                    if (!dev->execute(item, err)) {
+                        Serial.println("[HW] execute error: " + err);
+                    }
+                } else {
+                    Serial.println("[HW] no device for action: " + String(item.actionName));
+                }
+            }
+        }
+    }
+}
+
+// --- Arduino setup/loop (runs on Core 1 by default) ---
 
 unsigned long lastStatusReport = 0;
 
@@ -38,6 +98,7 @@ void setup() {
     Serial.println("=============================");
     Serial.println("  cy_robot ESP32-S3");
     Serial.println("  QQ Bot + DeepSeek Assistant");
+    Serial.println("  FreeRTOS Dual-Core");
     Serial.println("=============================");
     Serial.println();
 
@@ -47,6 +108,13 @@ void setup() {
 
     // Initialize GPIO
     gpioManager.begin();
+
+    // Register devices
+    registry.add(&rgbLedDevice);
+    registry.add(&gpioDevice);
+
+    // Initialize action queue
+    actionQueue.begin();
 
     // Initialize DeepSeek Client
     Serial.println("Initializing DeepSeek Client...");
@@ -89,30 +157,40 @@ void setup() {
         webPortal.begin();
     }
 
-    Serial.println("\nSetup complete!\n");
+    // Launch FreeRTOS tasks
+    xTaskCreatePinnedToCore(
+        networkTask, "network",
+        NETWORK_TASK_STACK, nullptr,
+        NETWORK_TASK_PRIO, nullptr,
+        NETWORK_TASK_CORE
+    );
+
+    xTaskCreatePinnedToCore(
+        hardwareTask, "hardware",
+        HARDWARE_TASK_STACK, nullptr,
+        HARDWARE_TASK_PRIO, nullptr,
+        HARDWARE_TASK_CORE
+    );
+
+    Serial.println("\nSetup complete! Tasks launched.\n");
 }
 
 void loop() {
-    // Run action queue and timed effects.
-    actionEngine.loop();
-
-    // Handle WiFi
+    // WiFi reconnect
     if (!wifiManager.isConnected()) {
         wifiManager.reconnect();
         delay(100);
         return;
     }
 
-    // QQ Bot WebSocket loop (heartbeat + messages)
-    qqBot.loop();
-
-    // Tick action engine again in case network work took time.
-    actionEngine.loop();
-
     // Status report every minute
     unsigned long now = millis();
     if (now - lastStatusReport >= STATUS_REPORT_INTERVAL_MS) {
-        Serial.println("Status - Heap: " + String(ESP.getFreeHeap() / 1024) + "KB, RSSI: " + String(WiFi.RSSI()) + "dBm");
+        Serial.println("Status - Heap: " + String(ESP.getFreeHeap() / 1024) +
+                       "KB, RSSI: " + String(WiFi.RSSI()) + "dBm" +
+                       ", Queue: " + String(actionQueue.count()));
         lastStatusReport = now;
     }
+
+    delay(100); // Low priority idle
 }

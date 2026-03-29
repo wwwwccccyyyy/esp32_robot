@@ -7,7 +7,7 @@ class DeepSeekClient {
 public:
     void begin();
     void setSystemPrompt(const String& prompt);
-    String chat(const String& message);
+    String chat(const String& message, float temperature = 0.7, bool jsonMode = false);
     bool isReady();
 
 private:
@@ -15,7 +15,7 @@ private:
     String systemPrompt;
     int maxRetries = 2;
 
-    String doRequest(const String& message);
+    String doRequest(const String& message, float temperature, bool jsonMode);
 };
 
 #endif // DEEPSEEK_CLIENT_H

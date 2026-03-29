@@ -4,17 +4,17 @@
 #include <Arduino.h>
 #include <WebSocketsClient.h>
 
-class CommandHandler;
+class CommandRouter;
 
 class QQBot {
 public:
-    explicit QQBot(CommandHandler& handler);
+    explicit QQBot(CommandRouter& handler);
     void begin();
     void loop();
     bool isReady();
 
 private:
-    CommandHandler& cmdHandler;
+    CommandRouter& cmdRouter;
     WebSocketsClient ws;
 
     String accessToken;

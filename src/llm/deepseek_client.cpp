@@ -18,7 +18,7 @@ void DeepSeekClient::setSystemPrompt(const String& prompt) {
     systemPrompt = prompt;
 }
 
-String DeepSeekClient::chat(const String& message) {
+String DeepSeekClient::chat(const String& message, float temperature, bool jsonMode) {
     if (!isReady()) {
         return "API Key not configured";
     }
@@ -26,10 +26,10 @@ String DeepSeekClient::chat(const String& message) {
     for (int attempt = 0; attempt <= maxRetries; attempt++) {
         if (attempt > 0) {
             Serial.println("Retry " + String(attempt) + "/" + String(maxRetries));
-            delay(1000 * attempt); // Simple backoff: 1s, 2s
+            delay(1000 * attempt);
         }
 
-        String result = doRequest(message);
+        String result = doRequest(message, temperature, jsonMode);
         if (!result.startsWith("HTTP Error:") && !result.startsWith("Connection")) {
             return result;
         }
@@ -40,7 +40,7 @@ String DeepSeekClient::chat(const String& message) {
     return "API request failed after retries";
 }
 
-String DeepSeekClient::doRequest(const String& message) {
+String DeepSeekClient::doRequest(const String& message, float temperature, bool jsonMode) {
     WiFiClientSecure client;
     client.setInsecure();
     client.setTimeout(DEEPSEEK_TIMEOUT_MS / 1000);
@@ -57,7 +57,12 @@ String DeepSeekClient::doRequest(const String& message) {
     doc["model"] = DEEPSEEK_MODEL;
     doc["max_tokens"] = DEEPSEEK_MAX_TOKENS;
     doc["stream"] = false;
-    doc["temperature"] = 0.7;
+    doc["temperature"] = temperature;
+
+    if (jsonMode) {
+        JsonObject fmt = doc["response_format"].to<JsonObject>();
+        fmt["type"] = "json_object";
+    }
 
     JsonArray messages = doc["messages"].to<JsonArray>();
 

@@ -1,12 +1,12 @@
 #include "qq_bot.h"
-#include "command_handler.h"
+#include "command_router.h"
 #include "config.h"
 #include "secrets.h"
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
-QQBot::QQBot(CommandHandler& handler) : cmdHandler(handler) {}
+QQBot::QQBot(CommandRouter& handler) : cmdRouter(handler) {}
 
 void QQBot::begin() {
     if (!refreshToken()) {
@@ -208,7 +208,7 @@ void QQBot::handlePayload(const char* payload) {
                 content.trim();
                 Serial.println("Group: " + content);
 
-                String response = cmdHandler.handle(content);
+                String response = cmdRouter.handle(content);
                 sendGroupMessage(groupOpenId, msgId, response);
             }
             else if (eventType == "C2C_MESSAGE_CREATE") {
@@ -218,7 +218,7 @@ void QQBot::handlePayload(const char* payload) {
                 content.trim();
                 Serial.println("DM: " + content);
 
-                String response = cmdHandler.handle(content);
+                String response = cmdRouter.handle(content);
                 sendDirectMessage(userOpenId, msgId, response);
             }
             break;
